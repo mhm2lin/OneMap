@@ -502,13 +502,15 @@ class OneMap:
         # Compute the obstacle map
         obstacle_mapped[:] = (obstacle_mapped > 0).to(torch.float32)
 
-        obstacle_mapped = torch.sparse_coo_tensor(pcl_grid_ids_masked_unique, obstacle_mapped.unsqueeze(1), (self.n_cells, self.n_cells, 1), is_coalesced=True).cpu()
-        obstcl_confidence_mapped = torch.sparse_coo_tensor(pcl_grid_ids_masked_unique, obstcl_confidence_mapped, (self.n_cells, self.n_cells, 1), is_coalesced=True).cpu()
+        obstacle_mapped = torch.sparse_coo_tensor(pcl_grid_ids_masked_unique, obstacle_mapped.unsqueeze(1), (self.n_cells, self.n_cells, 1)).coalesce()
+        obstacle_mapped = obstacle_mapped.cpu()
+        obstcl_confidence_mapped = torch.sparse_coo_tensor(pcl_grid_ids_masked_unique, obstcl_confidence_mapped, (self.n_cells, self.n_cells, 1)).coalesce()
+        obstcl_confidence_mapped = obstcl_confidence_mapped.cpu()
         # print("Updating with sparse matrix of size {}x{} with {} non-zero elements, resulting size is {} Mb".format(
         #     self.n_cells, self.n_cells, new_map.values().shape[0] * self.feature_dim,
         #                                 new_map.element_size() * new_map.values().shape[
         #                                     0] * self.feature_dim / 1024 / 1024))
-        return torch.sparse_coo_tensor(all_ids, coalesced_scores, (self.n_cells, self.n_cells, 1), is_coalesced=True).cpu(), torch.sparse_coo_tensor(all_ids, coalesced_map_data, (self.n_cells, self.n_cells, self.feature_dim), is_coalesced=True).cpu(), obstacle_mapped.cpu(), obstcl_confidence_mapped.cpu()
+        return torch.sparse_coo_tensor(all_ids, coalesced_scores, (self.n_cells, self.n_cells, 1)).coalesce().cpu(), torch.sparse_coo_tensor(all_ids, coalesced_map_data, (self.n_cells, self.n_cells, self.feature_dim)).coalesce().cpu(), obstacle_mapped.cpu(), obstcl_confidence_mapped.cpu()
 
     def project_single(self,
                        values: torch.Tensor,

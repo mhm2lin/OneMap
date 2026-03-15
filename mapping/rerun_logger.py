@@ -275,7 +275,8 @@ class RerunLogger:
         if self.to_file:
             rr.save(save_path)
         else:
-            rr.connect("127.0.0.1:9876")
+            # rr.connect("127.0.0.1:9876")
+            rr.spawn()
         if self.debug_log:
             setup_blueprint_debug()
         else:

@@ -116,7 +116,8 @@ class HabitatEvaluator:
                                                                                 self.scene_data,
                                                                                 self.object_nav_path)
         if self.actor is not None:
-            self.logger = rerun_logger.RerunLogger(self.actor.mapper, False, "") if self.log_rerun else None
+            # self.logger = rerun_logger.RerunLogger(self.actor.mapper, False, "") if self.log_rerun else None
+            self.logger = rerun_logger.RerunLogger(self.actor.mapper, True, "output.rrd", debug=False) if self.log_rerun else None      
         self.results_path = "/home/finn/active/MON/results_gibson" if self.is_gibson else "results/"
 
     def load_scene(self, scene_id: str):

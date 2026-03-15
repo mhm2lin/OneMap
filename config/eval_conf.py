@@ -17,6 +17,9 @@ class EvalConf:
     scene_path: str
     use_pointnav: bool
     square_im: bool
+    n_workers: int = 2
+    batch_size: int = 4
+    parallel_eval: bool = True
 
 
 def load_eval_config():

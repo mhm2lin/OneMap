@@ -5,12 +5,12 @@ EvalConf:
   is_gibson: False
   object_nav_path: "datasets/datasets/objectnav/hm3d/v1/val/content/"
   scene_path: "datasets/scene_datasets/"
-  log_rerun: False
+  log_rerun: True
   use_pointnav: False
   square_im: True
 
 config: [
-  ./controller_habitat.yaml, # Default Habitat Controller
-  ./mapping_conf_sim.yaml,       # Default Mapping Configuration
-  ./planning_conf.yaml       # Default Planning Configuration
+  ./controller_habitat.yaml,
+  ./mapping_conf_sim.yaml,
+  ./planning_conf.yaml
 ]

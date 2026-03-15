@@ -1,6 +1,7 @@
 """
 Mapping Rerun Logger. Sets up the experiment blueprint and logs the map and robot position.
 """
+import os
 import numpy as np
 import rerun as rr
 import rerun.blueprint as rrb
@@ -273,10 +274,15 @@ class RerunLogger:
         self.mapper = mapper
         rr.init("MON", spawn=False)
         if self.to_file:
+            save_dir = os.path.dirname(save_path)
+            if save_dir and not os.path.exists(save_dir):
+                os.makedirs(save_dir, exist_ok=True)
+                print(f"[RerunLogger] Created directory: {save_dir}")
             rr.save(save_path)
+            print(f"[RerunLogger] Saving to file: {save_path}")
         else:
-            # rr.connect("127.0.0.1:9876")
-            rr.spawn()
+            rr.connect("127.0.0.1:9876")
+            # rr.spawn()
         if self.debug_log:
             setup_blueprint_debug()
         else:

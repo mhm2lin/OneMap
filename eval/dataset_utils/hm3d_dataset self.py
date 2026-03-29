@@ -10,68 +10,37 @@ import gzip
 import json
 
 def load_hm3d_episodes(episodes: List[Episode], scene_data: Dict[str, SceneData], object_nav_path: str):
-    """
-    加载HM3D episodes，支持新的R2R转换格式
-    
-    新增字段支持:
-    - sub_instructions: 子指令列表
-    - state_constraints: 状态约束
-    - decisions: 决策信息
-    - destination: 目标描述
-    - best_seq_dists: 最优路径序列
-    - radius: 目标半径
-    """
     i = 0
     files = listdir(object_nav_path)
     files = sorted(files, key=str.casefold)
-    
     for file in files:
         if file.endswith('.json.gz'):
             with gzip.open(os.path.join(object_nav_path, file), 'r') as f:
                 json_data = json.load(f)
-                
+                scene_id = json_data['episodes'][0]['scene_id']
+                if scene_id not in scene_data:
+                    scene_data_ = SceneData(scene_id, {}, {})
+                    for obj_ in json_data['goals_by_category']:
+                        obj = json_data['goals_by_category'][obj_]
+                        obj_name = obj[0]['object_category']
+                        scene_data_.object_locations[
+                            obj_name] = []  # the actual locations and bounding boxes will be loaded later
+                        scene_data_.object_ids[obj_name] = []
+                        for obj_loc in obj:
+                            scene_data_.object_ids[obj_name].append(obj_loc['object_id'])
+                    scene_data[scene_id] = scene_data_
                 for ep in json_data['episodes']:
-                    scene_id = ep['scene_id']
-                    
-                    if scene_id not in scene_data:
-                        scene_data_ = SceneData(scene_id, {}, {})
-                        
-                        if 'goals_by_category' in json_data:
-                            for obj_ in json_data['goals_by_category']:
-                                obj = json_data['goals_by_category'][obj_]
-                                obj_name = obj[0]['object_category']
-                                scene_data_.object_locations[obj_name] = []
-                                scene_data_.object_ids[obj_name] = []
-                                for obj_loc in obj:
-                                    scene_data_.object_ids[obj_name].append(obj_loc['object_id'])
-                        
-                        scene_data[scene_id] = scene_data_
-                    
-                    episode = Episode(
-                        ep['scene_id'],
-                        ep.get('episode_id', i),
-                        ep['start_position'],
-                        ep['start_rotation'],
-                        ep.get('object_goals', [ep.get('object_category', 'unknown')]),
-                        ep.get('best_seq_dists', [[ep.get('info', {}).get('geodesic_distance', 0.0), [0.0, 0.0, 0.0]]])
-                    )
-                    
-                    episode.sub_instructions = ep.get('sub_instructions', [])
-                    episode.instruction_text = ep.get('instruction_text', '')
-                    episode.state_constraints = ep.get('state_constraints', {})
-                    episode.decisions = ep.get('decisions', {})
-                    episode.destination = ep.get('destination', '')
-                    episode.radius = ep.get('radius', None)
-                    
+                    episode = Episode(ep['scene_id'],
+                                      i,
+                                      ep['start_position'],
+                                      ep['start_rotation'],
+                                      [ep['object_category']],
+                                      ep['info']['geodesic_distance'])
                     episodes.append(episode)
                     i += 1
-    
     return episodes, scene_data
 
 def load_hm3d_objects(scene_data: Dict[str, SceneData], semantic_objects, scene_id: str):
-    """
-    加载HM3D场景中的物体信息
-    """
     for scene_obj in semantic_objects:
         obj_name = scene_obj.category.name()
         for cat in scene_data[scene_id].object_locations.keys():
@@ -93,7 +62,7 @@ def load_hm3d_objects(scene_data: Dict[str, SceneData], semantic_objects, scene_
 
 
 if __name__ == '__main__':
-    eps, scene_data = load_hm3d_episodes([], {}, "converted_datasets")
+    eps, scene_data = load_hm3d_episodes([], {}, "datasets/objectnav_hm3d_v1/val/content")
     print(f"Found {len(eps)} episodes")
     scene_dist = {}
     for ep in eps:

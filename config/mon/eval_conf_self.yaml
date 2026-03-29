@@ -3,8 +3,8 @@ EvalConf:
   max_steps: 1500
   max_dist: 1.5
   is_gibson: False
-  object_nav_path: "datasets/datasets/multiobject_episodes/"
-  scene_path: "datasets/scene_datasets/"
+  object_nav_path: "datasets/datasets/converted_datasets"
+  scene_path: "datasets/"
   log_rerun: True
   use_pointnav: False
   square_im: True

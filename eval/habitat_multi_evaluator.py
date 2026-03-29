@@ -130,8 +130,9 @@ class HabitatMultiEvaluator:
         else:
             raise RuntimeError("You are running the multi object evaluation with a single object config.")
         if self.actor is not None:
-            self.logger = rerun_logger.RerunLogger(self.actor.mapper, False, "") if self.log_rerun else None
+            self.logger = rerun_logger.RerunLogger(self.actor.mapper, True, "results_multi/output.rrd") if self.log_rerun else None
         self.results_path = "/home/finn/active/MON/results_gibson_multi" if self.is_gibson else "results_multi/"
+        os.makedirs(f"{self.results_path}/similarities", exist_ok=True)
 
     def load_scene(self, scene_id: str):
         if self.sim is not None:

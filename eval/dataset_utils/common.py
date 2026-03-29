@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # typing
 from typing import List, Dict, Union, Optional
@@ -38,6 +38,13 @@ class Episode:
     obj_sequence: List[str]
     best_dist: Union[float, List[float]]
     floor_id: Union[int, None] = None
+    
+    sub_instructions: List[str] = field(default_factory=list)
+    instruction_text: str = ""
+    state_constraints: Dict[str, List] = field(default_factory=dict)
+    decisions: Dict[str, Dict] = field(default_factory=dict)
+    destination: str = ""
+    radius: Optional[float] = None
 
 @dataclass
 class GibsonEpisode(Episode):

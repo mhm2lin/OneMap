@@ -22,11 +22,28 @@ class SemanticObject:
 
 
 @dataclass
+class SemanticRegion:
+    region_id: str
+    region_category: str
+    bbox: List[float]
+    level_id: Optional[str] = None
+    
+    def __eq__(self, other):
+        if isinstance(other, SemanticRegion):
+            return self.region_id == other.region_id
+        elif isinstance(other, str):
+            return self.region_id == other
+        return False
+
+
+@dataclass
 class SceneData:
     scene_id: str
     object_locations: Dict[str, List[SemanticObject]]
     object_ids: Dict[str, List[str]]
+    room_locations: Dict[str, List[SemanticRegion]] = field(default_factory=dict)
     objects_loaded: bool = False
+    rooms_loaded: bool = False
 
 
 @dataclass

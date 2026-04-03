@@ -1,6 +1,6 @@
-__all__ = ['SceneData', 'SemanticObject', 'Episode', 'GibsonEpisode', 'GibsonDataset', 'HM3DDataset', 'HM3DMultiDataset']
+__all__ = ['SceneData', 'SemanticObject','SemanticRegion', 'Episode', 'GibsonEpisode', 'GibsonDataset', 'HM3DDataset', 'HM3DMultiDataset']
 
-from .common import SceneData, SemanticObject, Episode, GibsonEpisode
+from .common import SceneData, SemanticObject, Episode, GibsonEpisode, SemanticRegion
 
 from . import gibson_dataset as GibsonDataset
 

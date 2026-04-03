@@ -128,7 +128,7 @@ class HabitatEvaluator:
         if self.is_gibson:
             pass # TODO
         else:
-            backend_cfg.scene_dataset_config_file = self.scene_path + "hm3d/hm3d_annotated_basis.scene_dataset_config.json"
+            backend_cfg.scene_dataset_config_file = self.scene_path + "mp3d.scene_dataset_config.json"
 
         hfov = 90
         rgb = habitat_sim.CameraSensorSpec()

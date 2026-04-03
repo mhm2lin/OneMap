@@ -1,4 +1,4 @@
-from eval.dataset_utils import Episode, SceneData, SemanticObject
+from eval.dataset_utils import Episode, SceneData, SemanticObject, SemanticRegion
 
 # typing
 from typing import Dict, List
@@ -68,11 +68,36 @@ def load_hm3d_episodes(episodes: List[Episode], scene_data: Dict[str, SceneData]
     
     return episodes, scene_data
 
-def load_hm3d_objects(scene_data: Dict[str, SceneData], semantic_objects, scene_id: str):
+def load_hm3d_objects(scene_data: Dict[str, SceneData], semantic_scene, scene_id: str):
     """
-    加载HM3D场景中的物体信息
+    加载HM3D场景中的物体信息和房间信息
+    
+    Args:
+        scene_data: 场景数据字典
+        semantic_scene: Habitat语义场景对象
+        scene_id: 场景ID
     """
-    for scene_obj in semantic_objects:
+    if not scene_data[scene_id].rooms_loaded:
+        for region in semantic_scene.regions:
+            region_name = region.category.name()
+            region_id = region.id
+            
+            if region_name not in scene_data[scene_id].room_locations:
+                scene_data[scene_id].room_locations[region_name] = []
+            
+            scene_data[scene_id].room_locations[region_name].append(
+                SemanticRegion(
+                    region_id=region_id,
+                    region_category=region_name,
+                    bbox=region.aabb,
+                    level_id=region.level.id if region.level else None
+                )
+            )
+        
+        scene_data[scene_id].rooms_loaded = True   #这个参数默认是False，当加载完成后设置为True
+        print(f"Loaded {len(semantic_scene.regions)} regions for scene {scene_id}")
+    
+    for scene_obj in semantic_scene.objects:
         obj_name = scene_obj.category.name()
         for cat in scene_data[scene_id].object_locations.keys():
             if scene_obj.id in scene_data[scene_id].object_locations[cat]:

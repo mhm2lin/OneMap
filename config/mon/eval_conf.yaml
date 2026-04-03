@@ -3,11 +3,12 @@ EvalConf:
   max_steps: 1000
   max_dist: 1.0
   is_gibson: False
-  object_nav_path: "datasets/datasets/objectnav/hm3d/v1/val/content"
-  scene_path: "datasets/scene_datasets/"
+  object_nav_path: "converted_datasets"
+  scene_path: "datasets/"
   log_rerun: True
   use_pointnav: False
   square_im: True
+  use_subtask_manager: True
 
 config: [
   ./controller_habitat.yaml,

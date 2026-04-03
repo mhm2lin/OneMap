@@ -32,7 +32,7 @@ from dataclasses import dataclass
 import quaternion
 
 # typing
-from typing import Tuple, List, Dict
+from typing import Tuple, List, Dict, Optional
 import enum
 
 # habitat
@@ -55,6 +55,7 @@ import pickle
 # scipy
 from scipy.spatial.transform import Rotation as R
 
+
 class Result(enum.Enum):
     SUCCESS = 1
     FAILURE_MISDETECT = 2
@@ -62,6 +63,156 @@ class Result(enum.Enum):
     FAILURE_OOT = 4
     FAILURE_NOT_REACHED = 5
     FAILURE_ALL_EXPLORED = 6
+
+
+class SubTaskManager:
+    """
+    子任务管理器
+    负责管理导航任务中的子任务序列，从decisions中提取目标物体
+    """
+    
+    def __init__(self, episode):
+        """
+        初始化子任务管理器
+        
+        Args:
+            episode: Episode对象，包含sub_instructions, decisions, state_constraints等
+        """
+        self.episode = episode
+        self.sub_instructions = episode.sub_instructions
+        self.decisions = episode.decisions
+        self.state_constraints = episode.state_constraints
+        self.current_subtask_idx = 0
+        self.total_subtasks = len(self.sub_instructions)
+        
+    def get_current_subtask(self) -> Optional[Dict]:
+        """
+        获取当前子任务信息
+        
+        Returns:
+            包含sub_instruction, target_objects, directions等信息的字典
+            如果没有更多子任务，返回None
+        """
+        if self.current_subtask_idx >= self.total_subtasks:
+            return None
+        
+        sub_idx = str(self.current_subtask_idx)
+        sub_instruction = self.sub_instructions[self.current_subtask_idx] if self.current_subtask_idx < len(self.sub_instructions) else ""
+        
+        decision = self.decisions.get(sub_idx, {})
+        constraints = self.state_constraints.get(sub_idx, [])
+        
+        target_objects = self._extract_target_objects(decision, constraints)
+        directions = decision.get('directions', [])
+        
+        subtask = {
+            'subtask_id': self.current_subtask_idx,
+            'sub_instruction': sub_instruction,
+            'target_objects': target_objects,
+            'directions': directions,
+            'decision': decision,
+            'constraints': constraints
+        }
+        
+        return subtask
+    
+    def _extract_target_objects(self, decision: Dict, constraints: List) -> List[str]:
+        """
+        从decision和constraints中提取目标物体或房间
+        
+        Args:
+            decision: decisions字典中对应子任务的决策信息
+            constraints: state_constraints中对应子任务的约束列表
+            
+        Returns:
+            目标物体或房间名称列表
+        """
+        ROOM_NAMES = {
+            'bedroom', 'bathroom', 'kitchen', 'living room', 'living_room',
+            'dining room', 'dining_room', 'office', 'study', 'garage',
+            'hallway', 'hall', 'lobby', 'entrance', 'closet', 'pantry',
+            'laundry room', 'laundry_room', 'basement', 'attic', 'garage',
+            'porch', 'balcony', 'terrace', 'garden', 'yard', 'room', 'stairs',
+            'staircase', 'stairway', 'corridor', 'passage', 'passageway'
+        }
+        
+        target_objects = []
+        
+        landmarks = decision.get('landmarks', [])
+        for landmark in landmarks:
+            if isinstance(landmark, list) and len(landmark) > 0:
+                obj_name = landmark[0]
+                if obj_name and obj_name not in target_objects:
+                    target_objects.append(obj_name)
+        
+        for constraint in constraints:
+            if isinstance(constraint, list) and len(constraint) >= 2:
+                constraint_type = constraint[0]
+                constraint_value = constraint[1]
+                
+                if constraint_type == 'object constraint':
+                    if constraint_value not in target_objects:
+                        target_objects.append(constraint_value)
+        
+        return target_objects
+    
+    def has_valid_target(self) -> bool:
+        """
+        检查当前子任务是否有有效的目标物体
+        
+        Returns:
+            True如果有目标物体，False否则
+        """
+        subtask = self.get_current_subtask()
+        if subtask is None:
+            return False
+        
+        return len(subtask['target_objects']) > 0
+    
+    def advance_to_next_valid_subtask(self) -> Optional[Dict]:
+        """
+        前进到下一个有效的子任务（有目标物体的子任务）
+        跳过没有目标物体的子任务
+        
+        Returns:
+            下一个有效的子任务信息，如果没有则返回None
+        """
+        while self.current_subtask_idx < self.total_subtasks:
+            self.current_subtask_idx += 1
+            
+            if self.has_valid_target():
+                return self.get_current_subtask()
+        
+        return None
+    
+    def advance_subtask(self) -> bool:
+        """
+        前进到下一个子任务
+        
+        Returns:
+            True如果还有下一个子任务，False如果没有
+        """
+        self.current_subtask_idx += 1
+        return self.current_subtask_idx < self.total_subtasks
+    
+    def is_finished(self) -> bool:
+        """
+        检查是否已完成所有子任务
+        
+        Returns:
+            True如果已完成，False否则
+        """
+        return self.current_subtask_idx >= self.total_subtasks
+    
+    def get_progress(self) -> Tuple[int, int]:
+        """
+        获取当前进度
+        
+        Returns:
+            (当前子任务索引, 总子任务数)
+        """
+        return (self.current_subtask_idx, self.total_subtasks)
+
 
 class HabitatEvaluator:
     def __init__(self,
@@ -82,6 +233,7 @@ class HabitatEvaluator:
         self.episodes = []
         self.exclude_ids = []
         self.is_gibson = config.is_gibson
+        self.use_subtask_manager = config.use_subtask_manager if hasattr(config, 'use_subtask_manager') else False
 
         self.sim = None
         self.actor = actor
@@ -116,7 +268,6 @@ class HabitatEvaluator:
                                                                                 self.scene_data,
                                                                                 self.object_nav_path)
         if self.actor is not None:
-            # self.logger = rerun_logger.RerunLogger(self.actor.mapper, False, "") if self.log_rerun else None
             self.logger = rerun_logger.RerunLogger(self.actor.mapper, self.log_rerun, "results/output.rrd", debug=False) if self.log_rerun else None      
         self.results_path = "/home/finn/active/MON/results_gibson" if self.is_gibson else "results/"
 
@@ -126,9 +277,9 @@ class HabitatEvaluator:
         backend_cfg = habitat_sim.SimulatorConfiguration()
         backend_cfg.scene_id = self.scene_path + scene_id
         if self.is_gibson:
-            pass # TODO
+            pass
         else:
-            backend_cfg.scene_dataset_config_file = self.scene_path + "hm3d/hm3d_annotated_basis.scene_dataset_config.json"
+            backend_cfg.scene_dataset_config_file = self.scene_path + "mp3d.scene_dataset_config.json"
 
         hfov = 90
         rgb = habitat_sim.CameraSensorSpec()
@@ -151,25 +302,21 @@ class HabitatEvaluator:
             turn_right=ActionSpec("turn_right", ActuationSpec(amount=5.0)),
         ))
         agent_cfg.sensor_specifications = [rgb, depth]
-        sim_cfg = habitat_sim.Configuration(backend_cfg, [agent_cfg])   #对环境和机器人进行配置，主要是机器人的感知模块，RGB和Depth
-        self.sim = habitat_sim.Simulator(sim_cfg)   #根据配置创建实例
+        sim_cfg = habitat_sim.Configuration(backend_cfg, [agent_cfg])
+        self.sim = habitat_sim.Simulator(sim_cfg)
         if self.scene_data[scene_id].objects_loaded:
             return
         if not self.is_gibson:
-            self.scene_data = HM3DDataset.load_hm3d_objects(self.scene_data, self.sim.semantic_scene.objects, scene_id)
+            self.scene_data = HM3DDataset.load_hm3d_objects(self.scene_data, self.sim.semantic_scene, scene_id)
         else:
             self.scene_data = GibsonDataset.load_gibson_objects(self.scene_data, self.dataset_info, scene_id)
 
 
-
-    def execute_action(self, action: Dict
-                       ):
+    def execute_action(self, action: Dict):
         if 'discrete' in action.keys():
-            # We have a discrete actor
             self.sim.step(action['discrete'])
 
         elif 'continuous' in action.keys():
-            # We have a continuous actor
             self.vel_control.angular_velocity = action['continuous']['angular']
             self.vel_control.linear_velocity = action['continuous']['linear']
             agent_state = self.sim.get_agent(0).state
@@ -177,25 +324,20 @@ class HabitatEvaluator:
                 utils.quat_to_magnum(agent_state.rotation), agent_state.position
             )
 
-            # manually integrate the rigid state
             target_rigid_state = self.vel_control.integrate_transform(
                 self.time_step, previous_rigid_state
             )
 
-            # snap rigid state to navmesh and set state to object/sim
-            # calls pathfinder.try_step or self.pathfinder.try_step_no_sliding
             end_pos = self.sim.step_filter(
                 previous_rigid_state.translation, target_rigid_state.translation
             )
 
-            # set the computed state
             agent_state.position = end_pos
             agent_state.rotation = utils.quat_from_magnum(
                 target_rigid_state.rotation
             )
             self.sim.get_agent(0).set_state(agent_state)
             self.sim.step_physics(self.time_step)
-
 
     def read_results(self, path, sort_by):
         state_dir = os.path.join(path, 'state')
@@ -204,27 +346,19 @@ class HabitatEvaluator:
         scene_name = {}
         spl = {}
 
-        # Check if the state directory exists
         if not os.path.isdir(state_dir):
             print(f"Error: {state_dir} is not a valid directory")
             return state_results
         pose_dir = os.path.join(os.path.abspath(os.path.join(state_dir, os.pardir)), "trajectories")
 
-        # Iterate through all files in the state directory
         for filename in os.listdir(state_dir):
             if filename.startswith('state_') and filename.endswith('.txt'):
                 try:
-                    # Extract the experiment number from the filename
-                    experiment_num = int(filename[6:-4])  # removes 'state_' and '.txt'
-                    # if experiment_num > 1045:
-                    #     continue
-                    # Read the content of the file
+                    experiment_num = int(filename[6:-4])
                     with open(os.path.join(state_dir, filename), 'r') as file:
                         content = file.read().strip()
 
-                    # Convert the content to a number (assuming it's a float)
                     state_value = int(content)
-                    # Store the result in the dictionary
                     state_results[experiment_num] = state_value
                     object_query[experiment_num] = self.episodes[experiment_num].obj_sequence[0]
                     scene_name[experiment_num] = self.episodes[experiment_num].scene_id
@@ -249,22 +383,16 @@ class HabitatEvaluator:
         def calculate_percentages(group):
             total = len(group)
             result = pd.Series({Result(state).name: (group['state'] == state).sum() / total for state in states})
-
-            # Calculate average SPL and multiply by 100
             avg_spl = group['spl'].mean()
             result['Average SPL'] = avg_spl
-
             return result
 
-        # Per-object results
         object_results = data.groupby('obj').apply(calculate_percentages).reset_index()
         object_results = object_results.rename(columns={'obj': 'Object'})
 
-        # Per-scene results
         scene_results = data.groupby('scene').apply(calculate_percentages).reset_index()
         scene_results = scene_results.rename(columns={'scene': 'Scene'})
 
-        # Overall results
         overall_percentages = calculate_percentages(data)
         overall_row = pd.DataFrame([{'Object': 'Overall'} | overall_percentages.to_dict()])
         object_results = pd.concat([overall_row, object_results], ignore_index=True)
@@ -272,15 +400,12 @@ class HabitatEvaluator:
         overall_row = pd.DataFrame([{'Scene': 'Overall'} | overall_percentages.to_dict()])
         scene_results = pd.concat([overall_row, scene_results], ignore_index=True)
 
-        # Sorting
         object_results = object_results.sort_values(by=sort_by, ascending=False)
         scene_results = scene_results.sort_values(by=sort_by, ascending=False)
 
-        # Function to format percentages
         def format_percentages(val):
             return f"{val:.2%}" if isinstance(val, float) else val
 
-        # Apply formatting to all columns except the first one (Object/Scene)
         object_table = object_results.iloc[:, 0].to_frame().join(
             object_results.iloc[:, 1:].applymap(format_percentages))
         scene_table = scene_results.iloc[:, 0].to_frame().join(
@@ -296,14 +421,11 @@ class HabitatEvaluator:
     def evaluate(self):
         success = 0
         n_eps = 0
-        # randomly shuffle episodes
-        # random.shuffle(self.episodes)
         success_per_obj = {}
         obj_count = {}
         results = []
-        # restart at 930
+        
         for n_ep, episode in enumerate(self.episodes):
-        # for n_ep, episode in enumerate(self.episodes[492:]):
             poses = []
             results.append(Result.FAILURE_OOT)
             steps = 0
@@ -312,48 +434,99 @@ class HabitatEvaluator:
             n_eps += 1
             if self.sim is None or not self.sim.curr_scene_name in episode.scene_id:
                 self.load_scene(episode.scene_id)
-            # if self.is_gibson:
-            #     episode = self.compute_gt_path_gibson(episode)
+            
             self.sim.initialize_agent(0, habitat_sim.AgentState(episode.start_position, episode.start_rotation))
             self.actor.reset()
-            current_obj_id = 0
-            current_obj = episode.obj_sequence[current_obj_id]
+            
+            if self.use_subtask_manager and hasattr(episode, 'decisions') and episode.decisions:
+                subtask_manager = SubTaskManager(episode)
+                subtask = subtask_manager.get_current_subtask()
+                
+                if subtask is None or not subtask['target_objects']:
+                    print(f"Episode {episode.episode_id}: No valid subtasks with target objects, skipping...")
+                    results[n_ep] = Result.FAILURE_OOT
+                    continue
+                
+                current_obj = subtask['target_objects'][0]
+                
+                is_room_target = current_obj.lower() in {
+                    'bedroom', 'bathroom', 'kitchen', 'living room', 'living_room',
+                    'dining room', 'dining_room', 'office', 'study', 'garage',
+                    'hallway', 'hall', 'lobby', 'entrance', 'closet', 'pantry',
+                    'laundry room', 'laundry_room', 'basement', 'attic',
+                    'porch', 'balcony', 'terrace', 'garden', 'yard', 'room', 'stairs',
+                    'staircase', 'stairway', 'corridor', 'passage', 'passageway'
+                }
+                
+                target_locations = (current_obj in self.scene_data[episode.scene_id].object_locations or 
+                                   current_obj in self.scene_data[episode.scene_id].room_locations)
+                
+                if not target_locations:
+                    print(f"Episode {episode.episode_id}: Target '{current_obj}' not found in scene data, skipping...")
+                    results[n_ep] = Result.FAILURE_OOT
+                    continue
+                
+                print(f"Episode {episode.episode_id}: Starting with subtask 0, target: {current_obj} ({'room' if is_room_target else 'object'})")
+                print(f"  Sub-instruction: {subtask['sub_instruction']}")
+            else:
+                current_obj_id = 0
+                current_obj = episode.obj_sequence[current_obj_id]
+                
+                if current_obj not in self.scene_data[episode.scene_id].object_locations:
+                    print(f"Episode {episode.episode_id}: Target object '{current_obj}' not found in scene data, skipping...")
+                    results[n_ep] = Result.FAILURE_OOT
+                    continue
+            
             if current_obj not in success_per_obj:
                 success_per_obj[current_obj] = 0
                 obj_count[current_obj] = 1
             else:
                 obj_count[current_obj] += 1
+            
             self.actor.set_query(current_obj)
+            
+            target_locations = []
+            if current_obj in self.scene_data[episode.scene_id].object_locations:
+                target_locations = self.scene_data[episode.scene_id].object_locations[current_obj]
+            elif current_obj in self.scene_data[episode.scene_id].room_locations:
+                target_locations = self.scene_data[episode.scene_id].room_locations[current_obj]
+            
             if self.log_rerun:
                 pts = []
-                for obj in self.scene_data[episode.scene_id].object_locations[current_obj]:
-                    if not self.is_gibson:
-                        pt = obj.bbox.center[[0, 2]]
-                        pt = (-pt[1], -pt[0])
-                        pts.append(self.actor.mapper.one_map.metric_to_px(*pt))
-                    else:
-                        for pt_ in obj:
-                            pt = (pt_[0], pt_[1])
+                if target_locations:
+                    for obj in target_locations:
+                        if not self.is_gibson:
+                            pt = obj.bbox.center[[0, 2]]
+                            pt = (-pt[1], -pt[0])
                             pts.append(self.actor.mapper.one_map.metric_to_px(*pt))
-                pts = np.array(pts)
-                rr.log("map/ground_truth", rr.Points2D(pts, colors=[[255, 255, 0]], radii=[1]))
+                        else:
+                            for pt_ in obj:
+                                pt = (pt_[0], pt_[1])
+                                pts.append(self.actor.mapper.one_map.metric_to_px(*pt))
+                    pts = np.array(pts)
+                    rr.log("map/ground_truth", rr.Points2D(pts, colors=[[255, 255, 0]], radii=[1]))
 
-            while steps < self.max_steps and current_obj_id < len(episode.obj_sequence):
+            while steps < self.max_steps:
+                if self.use_subtask_manager and hasattr(episode, 'decisions') and episode.decisions:
+                    if subtask_manager.is_finished():
+                        print(f"Episode {episode.episode_id}: All subtasks completed!")
+                        results[n_ep] = Result.SUCCESS
+                        success += 1
+                        break
+                
                 observations = self.sim.get_sensor_observations()
-                # observations['depth'] = fill_depth_holes(observations['depth'])
                 observations['state'] = self.sim.get_agent(0).get_state()
                 pose = np.zeros((4, ))
                 pose[0] = -observations['state'].position[2]
                 pose[1] = -observations['state'].position[0]
                 pose[2] = observations['state'].position[1]
-                # yaw
+                
                 orientation = observations['state'].rotation
                 q0 = orientation.x
                 q1 = orientation.y
                 q2 = orientation.z
                 q3 = orientation.w
                 r = R.from_quat([q0, q1, q2, q3])
-                # r to euler
                 yaw, _, _1 = r.as_euler("yxz")
                 pose[3] = yaw
 
@@ -362,68 +535,126 @@ class HabitatEvaluator:
                     cam_x = -self.sim.get_agent(0).get_state().position[2]
                     cam_y = -self.sim.get_agent(0).get_state().position[0]
                     rr.log("camera/rgb", rr.Image(observations["rgb"]).compress(jpeg_quality=50))
-                    # rr.log("camera/depth", rr.Image((observations["depth"] - observations["depth"].min()) / (
-                    #         observations["depth"].max() - observations["depth"].min())))
                     self.logger.log_pos(cam_x, cam_y)
+                
                 action, called_found = self.actor.act(observations)
                 self.execute_action(action)
+                
                 if self.log_rerun:
                     self.logger.log_map()
 
                 if called_found:
-                    # We will now compute the closest distance to the bounding box of the object
+                    target_locations = []
+                    if current_obj in self.scene_data[episode.scene_id].object_locations:
+                        target_locations = self.scene_data[episode.scene_id].object_locations[current_obj]
+                    elif current_obj in self.scene_data[episode.scene_id].room_locations:
+                        target_locations = self.scene_data[episode.scene_id].room_locations[current_obj]
+                    
                     dist = get_closest_dist(self.sim.get_agent(0).get_state().position[[0, 2]],
-                                            self.scene_data[episode.scene_id].object_locations[current_obj], self.is_gibson)
+                                            target_locations, self.is_gibson)
+                    
                     if dist < self.max_dist:
-                        results[n_ep] = Result.SUCCESS
-                        success += 1
-                        print("Object found!")
-                        success_per_obj[current_obj] += 1
+                        print(f"Episode {episode.episode_id}: Target '{current_obj}' found!")
+                        
+                        if self.use_subtask_manager and hasattr(episode, 'decisions') and episode.decisions:
+                            subtask_manager.advance_subtask()
+                            
+                            while not subtask_manager.is_finished():
+                                next_subtask = subtask_manager.get_current_subtask()
+                                
+                                if next_subtask and next_subtask['target_objects']:
+                                    current_obj = next_subtask['target_objects'][0]
+                                    
+                                    target_locations = []
+                                    if current_obj in self.scene_data[episode.scene_id].object_locations:
+                                        target_locations = self.scene_data[episode.scene_id].object_locations[current_obj]
+                                    elif current_obj in self.scene_data[episode.scene_id].room_locations:
+                                        target_locations = self.scene_data[episode.scene_id].room_locations[current_obj]
+                                    
+                                    if not target_locations:
+                                        print(f"  Target '{current_obj}' not found in scene data, skipping subtask...")
+                                        subtask_manager.advance_subtask()
+                                        continue
+                                    
+                                    current_idx, total = subtask_manager.get_progress()
+                                    print(f"  Advancing to subtask {current_idx}/{total}, target: {current_obj}")
+                                    print(f"  Sub-instruction: {next_subtask['sub_instruction']}")
+                                    
+                                    if current_obj not in success_per_obj:
+                                        success_per_obj[current_obj] = 0
+                                        obj_count[current_obj] = 1
+                                    else:
+                                        obj_count[current_obj] += 1
+                                    
+                                    self.actor.set_query(current_obj)
+                                    break
+                                else:
+                                    print(f"  Subtask {subtask_manager.current_subtask_idx} has no valid target, skipping...")
+                                    subtask_manager.advance_subtask()
+                            else:
+                                print(f"Episode {episode.episode_id}: All subtasks completed successfully!")
+                                results[n_ep] = Result.SUCCESS
+                                success += 1
+                                break
+                        else:
+                            results[n_ep] = Result.SUCCESS
+                            success += 1
+                            success_per_obj[current_obj] += 1
+                            break
                     else:
                         pos = self.actor.mapper.chosen_detection
                         pos_metric = self.actor.mapper.one_map.px_to_metric(pos[0], pos[1])
+                        target_locations = []
+                        if current_obj in self.scene_data[episode.scene_id].object_locations:
+                            target_locations = self.scene_data[episode.scene_id].object_locations[current_obj]
+                        elif current_obj in self.scene_data[episode.scene_id].room_locations:
+                            target_locations = self.scene_data[episode.scene_id].room_locations[current_obj]
                         dist_detect = get_closest_dist([-pos_metric[1], -pos_metric[0]],
-                                            self.scene_data[episode.scene_id].object_locations[current_obj], self.is_gibson)
+                                            target_locations, self.is_gibson)
                         if dist_detect < self.max_dist:
                             results[n_ep] = Result.FAILURE_NOT_REACHED
                         else:
                             results[n_ep] = Result.FAILURE_MISDETECT
-                        print(f"Object not found! Dist {dist}, detect dist: {dist_detect}.")
-                    current_obj_id += 1
-                    # if current_obj_id < len(episode.obj_sequence):
-                    #     current_obj = episode.obj_sequence[current_obj_id]
-                    #     if current_obj not in success_per_obj:
-                    #         success_per_obj[current_obj] = 0
-                    #         obj_count[current_obj] = 1
-                    #         obj_count[current_obj] += 1
-                    #     self.actor.set_query(current_obj)
+                        print(f"Target not found! Dist {dist}, detect dist: {dist_detect}.")
+                        break
 
                 if steps % 100 == 0:
+                    target_locations = []
+                    if current_obj in self.scene_data[episode.scene_id].object_locations:
+                        target_locations = self.scene_data[episode.scene_id].object_locations[current_obj]
+                    elif current_obj in self.scene_data[episode.scene_id].room_locations:
+                        target_locations = self.scene_data[episode.scene_id].room_locations[current_obj]
                     dist = get_closest_dist(self.sim.get_agent(0).get_state().position[[0, 2]],
-                                            self.scene_data[episode.scene_id].object_locations[current_obj], self.is_gibson)
-                    print(f"Step {steps}, current object: {current_obj}, episode_id: {episode.episode_id}, distance to closest object: {dist}")
+                                            target_locations, self.is_gibson)
+                    if self.use_subtask_manager and hasattr(episode, 'decisions') and episode.decisions:
+                        current_idx, total = subtask_manager.get_progress()
+                        print(f"Step {steps}, Subtask {current_idx}/{total}, Target: {current_obj}, Episode: {episode.episode_id}, Dist: {dist:.2f}m")
+                    else:
+                        print(f"Step {steps}, current target: {current_obj}, episode_id: {episode.episode_id}, distance to closest target: {dist}")
                 steps += 1
+            
             poses = np.array(poses)
-            # If the last 10 poses didn't change much and we have OOT, assume stuck
-            if results[n_ep] == Result.FAILURE_OOT and np.linalg.norm(poses[-1] - poses[-10]) < 0.05:
+            if results[n_ep] == Result.FAILURE_OOT and len(poses) >= 10 and np.linalg.norm(poses[-1] - poses[-10]) < 0.05:
                 results[n_ep] = Result.FAILURE_STUCK
 
             num_frontiers = len(self.actor.mapper.nav_goals)
             np.savetxt(f"{self.results_path}/trajectories/poses_{episode.episode_id}.csv", poses, delimiter=",")
-            # save final sim to image file
+            
             final_sim = (self.actor.mapper.get_map() + 1.0) / 2.0
             final_sim = final_sim[0]
             final_sim = final_sim.transpose((1, 0))
             final_sim = np.flip(final_sim, axis=0)
             final_sim = monochannel_to_inferno_rgb(final_sim)
             cv2.imwrite(f"{self.results_path}/similarities/final_sim_{episode.episode_id}.png", final_sim)
+            
             if (results[n_ep] == Result.FAILURE_STUCK or results[n_ep] == Result.FAILURE_OOT) and num_frontiers == 0:
                 results[n_ep] = Result.FAILURE_ALL_EXPLORED
+            
             print(f"Overall success: {success / (n_eps)}, per object: ")
             for obj in success_per_obj.keys():
                 print(f"{obj}: {success_per_obj[obj] / obj_count[obj]}")
             print(
                 f"Result distribution: successes: {results.count(Result.SUCCESS)}, misdetects: {results.count(Result.FAILURE_MISDETECT)}, OOT: {results.count(Result.FAILURE_OOT)}, stuck: {results.count(Result.FAILURE_STUCK)}, not reached: {results.count(Result.FAILURE_NOT_REACHED)}, all explored: {results.count(Result.FAILURE_ALL_EXPLORED)}")
-            # Write result to file
+            
             with open(f"{self.results_path}/state/state_{episode.episode_id}.txt", 'w') as f:
                 f.write(str(results[n_ep].value))

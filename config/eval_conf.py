@@ -17,6 +17,7 @@ class EvalConf:
     scene_path: str
     use_pointnav: bool
     square_im: bool
+    use_subtask_manager: bool
 
 
 def load_eval_config():

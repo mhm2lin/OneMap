@@ -234,6 +234,7 @@ class HabitatEvaluator:
         self.exclude_ids = []
         self.is_gibson = config.is_gibson
         self.use_subtask_manager = config.use_subtask_manager if hasattr(config, 'use_subtask_manager') else False
+        self.using_ov = config.planner.using_ov if hasattr(config.planner, 'using_ov') else False
 
         self.sim = None
         self.actor = actor
@@ -458,13 +459,17 @@ class HabitatEvaluator:
                     'staircase', 'stairway', 'corridor', 'passage', 'passageway'
                 }
                 
-                target_locations = (current_obj in self.scene_data[episode.scene_id].object_locations or 
-                                   current_obj in self.scene_data[episode.scene_id].room_locations)
-                
-                if not target_locations:
-                    print(f"Episode {episode.episode_id}: Target '{current_obj}' not found in scene data, skipping...")
-                    results[n_ep] = Result.FAILURE_OOT
-                    continue
+                if not self.using_ov:
+                    target_locations = (current_obj in self.scene_data[episode.scene_id].object_locations or 
+                                       current_obj in self.scene_data[episode.scene_id].room_locations)
+                    
+                    if not target_locations:
+                        print(f"Episode {episode.episode_id}: Target '{current_obj}' not found in scene data, skipping...")
+                        print(f"  Hint: Enable open-vocabulary detection (using_ov: True) to detect arbitrary objects")
+                        results[n_ep] = Result.FAILURE_OOT
+                        continue
+                else:
+                    print(f"Episode {episode.episode_id}: Using open-vocabulary detection for '{current_obj}'")
                 
                 print(f"Episode {episode.episode_id}: Starting with subtask 0, target: {current_obj} ({'room' if is_room_target else 'object'})")
                 print(f"  Sub-instruction: {subtask['sub_instruction']}")
@@ -472,10 +477,14 @@ class HabitatEvaluator:
                 current_obj_id = 0
                 current_obj = episode.obj_sequence[current_obj_id]
                 
-                if current_obj not in self.scene_data[episode.scene_id].object_locations:
-                    print(f"Episode {episode.episode_id}: Target object '{current_obj}' not found in scene data, skipping...")
-                    results[n_ep] = Result.FAILURE_OOT
-                    continue
+                if not self.using_ov:
+                    if current_obj not in self.scene_data[episode.scene_id].object_locations:
+                        print(f"Episode {episode.episode_id}: Target object '{current_obj}' not found in scene data, skipping...")
+                        print(f"  Hint: Enable open-vocabulary detection (using_ov: True) to detect arbitrary objects")
+                        results[n_ep] = Result.FAILURE_OOT
+                        continue
+                else:
+                    print(f"Episode {episode.episode_id}: Using open-vocabulary detection for '{current_obj}'")
             
             if current_obj not in success_per_obj:
                 success_per_obj[current_obj] = 0
@@ -490,6 +499,67 @@ class HabitatEvaluator:
                 target_locations = self.scene_data[episode.scene_id].object_locations[current_obj]
             elif current_obj in self.scene_data[episode.scene_id].room_locations:
                 target_locations = self.scene_data[episode.scene_id].room_locations[current_obj]
+            
+            if target_locations and not self.using_ov:
+                initial_dist = get_closest_dist(self.sim.get_agent(0).get_state().position[[0, 2]],
+                                                target_locations, self.is_gibson)
+                
+                if initial_dist < self.max_dist:
+                    print(f"Episode {episode.episode_id}: Already at target '{current_obj}'! Dist: {initial_dist:.2f}m")
+                    
+                    if self.use_subtask_manager and hasattr(episode, 'decisions') and episode.decisions:
+                        subtask_manager.advance_subtask()
+                        
+                        while not subtask_manager.is_finished():
+                            next_subtask = subtask_manager.get_current_subtask()
+                            
+                            if next_subtask and next_subtask['target_objects']:
+                                current_obj = next_subtask['target_objects'][0]
+                                
+                                target_locations = []
+                                if current_obj in self.scene_data[episode.scene_id].object_locations:
+                                    target_locations = self.scene_data[episode.scene_id].object_locations[current_obj]
+                                elif current_obj in self.scene_data[episode.scene_id].room_locations:
+                                    target_locations = self.scene_data[episode.scene_id].room_locations[current_obj]
+                                
+                                if not target_locations:
+                                    print(f"  Target '{current_obj}' not found in scene data, skipping subtask...")
+                                    subtask_manager.advance_subtask()
+                                    continue
+                                
+                                initial_dist = get_closest_dist(self.sim.get_agent(0).get_state().position[[0, 2]],
+                                                                target_locations, self.is_gibson)
+                                
+                                if initial_dist < self.max_dist:
+                                    print(f"  Already at target '{current_obj}'! Dist: {initial_dist:.2f}m")
+                                    subtask_manager.advance_subtask()
+                                    continue
+                                
+                                current_idx, total = subtask_manager.get_progress()
+                                print(f"  Advancing to subtask {current_idx}/{total}, target: {current_obj}")
+                                print(f"  Sub-instruction: {next_subtask['sub_instruction']}")
+                                
+                                if current_obj not in success_per_obj:
+                                    success_per_obj[current_obj] = 0
+                                    obj_count[current_obj] = 1
+                                else:
+                                    obj_count[current_obj] += 1
+                                
+                                self.actor.set_query(current_obj)
+                                break
+                            else:
+                                print(f"  Subtask {subtask_manager.current_subtask_idx} has no valid target, skipping...")
+                                subtask_manager.advance_subtask()
+                        else:
+                            print(f"Episode {episode.episode_id}: All subtasks completed successfully!")
+                            results[n_ep] = Result.SUCCESS
+                            success += 1
+                            continue
+                    else:
+                        results[n_ep] = Result.SUCCESS
+                        success += 1
+                        success_per_obj[current_obj] += 1
+                        continue
             
             if self.log_rerun:
                 pts = []
@@ -542,8 +612,46 @@ class HabitatEvaluator:
                 
                 if self.log_rerun:
                     self.logger.log_map()
-
-                if called_found:
+                
+                if self.using_ov:
+                    if called_found:
+                        print(f"Episode {episode.episode_id}: Target '{current_obj}' detected by open-vocabulary model!")
+                        
+                        if self.use_subtask_manager and hasattr(episode, 'decisions') and episode.decisions:
+                            subtask_manager.advance_subtask()
+                            
+                            while not subtask_manager.is_finished():
+                                next_subtask = subtask_manager.get_current_subtask()
+                                
+                                if next_subtask and next_subtask['target_objects']:
+                                    current_obj = next_subtask['target_objects'][0]
+                                    
+                                    current_idx, total = subtask_manager.get_progress()
+                                    print(f"  Advancing to subtask {current_idx}/{total}, target: {current_obj}")
+                                    print(f"  Sub-instruction: {next_subtask['sub_instruction']}")
+                                    
+                                    if current_obj not in success_per_obj:
+                                        success_per_obj[current_obj] = 0
+                                        obj_count[current_obj] = 1
+                                    else:
+                                        obj_count[current_obj] += 1
+                                    
+                                    self.actor.set_query(current_obj)
+                                    break
+                                else:
+                                    print(f"  Subtask {subtask_manager.current_subtask_idx} has no valid target, skipping...")
+                                    subtask_manager.advance_subtask()
+                            else:
+                                print(f"Episode {episode.episode_id}: All subtasks completed successfully!")
+                                results[n_ep] = Result.SUCCESS
+                                success += 1
+                                break
+                        else:
+                            results[n_ep] = Result.SUCCESS
+                            success += 1
+                            success_per_obj[current_obj] += 1
+                            break
+                else:
                     target_locations = []
                     if current_obj in self.scene_data[episode.scene_id].object_locations:
                         target_locations = self.scene_data[episode.scene_id].object_locations[current_obj]
@@ -554,7 +662,7 @@ class HabitatEvaluator:
                                             target_locations, self.is_gibson)
                     
                     if dist < self.max_dist:
-                        print(f"Episode {episode.episode_id}: Target '{current_obj}' found!")
+                        print(f"Episode {episode.episode_id}: Target '{current_obj}' found! Dist: {dist:.2f}m")
                         
                         if self.use_subtask_manager and hasattr(episode, 'decisions') and episode.decisions:
                             subtask_manager.advance_subtask()
@@ -601,14 +709,11 @@ class HabitatEvaluator:
                             success += 1
                             success_per_obj[current_obj] += 1
                             break
-                    else:
+                    
+                    if called_found:
+                        print(f"Episode {episode.episode_id}: Actor called 'found' but dist {dist:.2f}m >= max_dist {self.max_dist}m")
                         pos = self.actor.mapper.chosen_detection
                         pos_metric = self.actor.mapper.one_map.px_to_metric(pos[0], pos[1])
-                        target_locations = []
-                        if current_obj in self.scene_data[episode.scene_id].object_locations:
-                            target_locations = self.scene_data[episode.scene_id].object_locations[current_obj]
-                        elif current_obj in self.scene_data[episode.scene_id].room_locations:
-                            target_locations = self.scene_data[episode.scene_id].room_locations[current_obj]
                         dist_detect = get_closest_dist([-pos_metric[1], -pos_metric[0]],
                                             target_locations, self.is_gibson)
                         if dist_detect < self.max_dist:
@@ -619,18 +724,11 @@ class HabitatEvaluator:
                         break
 
                 if steps % 100 == 0:
-                    target_locations = []
-                    if current_obj in self.scene_data[episode.scene_id].object_locations:
-                        target_locations = self.scene_data[episode.scene_id].object_locations[current_obj]
-                    elif current_obj in self.scene_data[episode.scene_id].room_locations:
-                        target_locations = self.scene_data[episode.scene_id].room_locations[current_obj]
-                    dist = get_closest_dist(self.sim.get_agent(0).get_state().position[[0, 2]],
-                                            target_locations, self.is_gibson)
                     if self.use_subtask_manager and hasattr(episode, 'decisions') and episode.decisions:
                         current_idx, total = subtask_manager.get_progress()
-                        print(f"Step {steps}, Subtask {current_idx}/{total}, Target: {current_obj}, Episode: {episode.episode_id}, Dist: {dist:.2f}m")
+                        print(f"Step {steps}, Subtask {current_idx}/{total}, Target: {current_obj}, Episode: {episode.episode_id}")
                     else:
-                        print(f"Step {steps}, current target: {current_obj}, episode_id: {episode.episode_id}, distance to closest target: {dist}")
+                        print(f"Step {steps}, current target: {current_obj}, episode_id: {episode.episode_id}")
                 steps += 1
             
             poses = np.array(poses)
